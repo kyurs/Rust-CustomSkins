@@ -1,0 +1,1 @@
+{"id":"custom-skins","name":"Custom Skins","version":"1.0.1","description":"Official Minecraft skins and persistent skin moderation for the Pumpkin server","authors":["KYURS"],"dependencies":[{"id":"eaglerxserver","optional":false}],"main":"customskins.CustomSkins"}
