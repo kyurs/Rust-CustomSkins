@@ -1,88 +1,84 @@
-# Custom Skins
+# Rust Custom Skins — native Pumpkin
 
-Runs on a Velocity proxy in front of Pumpkin. It automatically looks up each joining player's Minecraft username through Mojang's official profile and session APIs, obtains the signed textures property, and forwards it to Pumpkin. No client mod is required.
+Version **2.0.0** is a Rust/WASM plugin installed directly on **Pumpkin**. **Neither Velocity nor EaglerXServer is required.** Version 1.x was a legacy Velocity plugin and is not the native build.
 
-The current scope is **official Minecraft skins only**. Arbitrary image URLs are rejected with an explanation; no MineSkin account, key, or third-party signing service is used.
+It fetches signed textures from Mojang's official APIs, lets players select another Minecraft account's skin, and lets level-4 Pumpkin operators moderate skins to Steve or Alex. Selections and moderation persist across restarts. No client mod is needed for Java players.
+
+## Install
+
+Requires a Pumpkin host compatible with SDK commit `204a94ed895f041a845630d5a23c094705a0704e` (plugin API v0.1). Check the host ABI before upgrading. Download `custom_skins.wasm` from [Releases](https://github.com/kyurs/Rust-CustomSkins/releases), stop Pumpkin gracefully, and put it in Pumpkin's `plugins/` directory.
+
+Add this to `pumpkin.toml`:
+
+```toml
+[plugins.overrides.CustomSkins]
+enabled = true
+allow_unsigned = true
+max_memory_mb = 64
+allowed_permissions = ["fs.read.data", "fs.write.data", "http.outbound"]
+```
+
+Start Pumpkin. Permit outbound HTTPS to `api.mojang.com` and `sessionserver.mojang.com`. No extra inbound port, proxy, JVM, signing service or Eaglercraft plugin is needed. Skin state is stored at `plugins/data/CustomSkins/skins.json`.
+
+Skin textures are applied during Java login, before the player joins the world. A first uncached login may ask the player to reconnect after a few seconds while the official lookup completes. Later logins use a bounded cache. API failures fall back to normal client handling after a short retry window. Saved skin changes disconnect the affected online Java player so the next login refreshes their skin.
 
 ## Commands
 
 Both `/customskins ...` and `/custom skins ...` work.
 
-| Command | Access | Result |
-|---|---|---|
+| Command | Access | Action |
+| --- | --- | --- |
 | `/customskins` | Everyone | Help |
-| `/customskins status` | Everyone | Your current selection or moderation state |
-| `/customskins set <Minecraft-name>` | Everyone | Use that account's official skin |
-| `/customskins restore` | Everyone | Restore your own official skin, or normal client fallback if no official skin exists |
-| `/customskins setother <player> <Minecraft-name>` | Level-4 operators | Change another player's skin; target may be offline |
-| `/customskins moderate <player> [steve\|alex]` | Level-4 operators | Force a default skin and lock skin changes; defaults to Steve |
-| `/customskins unmoderate <player>` | Level-4 operators | Remove the lock and restore automatic lookup |
+| `/customskins status` | Everyone | Current selection or moderation |
+| `/customskins set <Minecraft-name>` | Everyone | Select that account's official skin |
+| `/customskins restore` | Everyone | Restore automatic lookup for your account |
+| `/customskins setother <player> <Minecraft-name>` | Level-4 operators / console | Set another player's skin |
+| `/customskins moderate <player> [steve\|alex]` | Level-4 operators / console | Force a default skin and lock changes |
+| `/customskins unmoderate <player>` | Level-4 operators / console | Unlock changes and restore automatic lookup |
 
-Successful changes disconnect the affected online player with a message asking them to rejoin. A clean reconnect refreshes their own model and everyone's view across the different Java versions and Eaglercraft. Moderation also immediately removes the old skin from the world. These commands do not change the skin on the player's Microsoft/Minecraft account.
+Administrative access uses Pumpkin's current operator permissions. Async changes recheck the requesting operator and discard results superseded by moderation or another saved change. Assigning a cosmetic rank does not grant operator status.
 
-Moderation persists through reconnects and restarts. Names are normalized to lowercase so changing capitalization cannot evade a lock. Permissions come from the exact operator UUIDs with level 4 in Pumpkin's `data/ops.json`, not display names or client messages. A moderated player must be explicitly unmoderated before selecting another skin.
+## Limits
 
-## Eaglercraft
+- Official Minecraft account skins only; arbitrary image URLs are not implemented.
+- Java skin textures only. This native plugin does not implement the separate Bedrock or Eaglercraft custom-skin protocol. Those clients retain their normal fallback; no Eaglercraft dependency is installed or required.
+- At most 24 in-flight lookups, 512 cached results, 4,096 saved selections and a 15-second self-service cooldown.
+- HTTPS requests are polled in bounded chunks without blocking the tick callback. Responses are capped at 64 KiB, with request deadlines and fixed official endpoints.
+- Atomic state replacement; corrupt existing files are preserved and prevent plugin startup. Fix the error before allowing gameplay if moderation is required.
+- Offline-mode usernames are not authentication. Skin customization does not prove ownership of an account.
 
-The plugin uses the installed EaglerXServer API to override skins from the signed official texture. If an official profile is missing, normal Eaglercraft skin handling remains active. EaglerXServer's texture downloader falls back to the original client skin on download failure. Moderation uses local built-in Steve/Alex presets, so it does not need a network download on Eaglercraft.
+## Upgrade from 1.x
 
-Java moderation uses bundled signed texture properties captured from Mojang's `MHF_Steve` and `MHF_Alex` profiles on 2026-10-12. Their texture images were inspected. The captured properties are pinned rather than refetched whenever an operator moderates someone.
+1. Back up existing skin state and configuration; stop Pumpkin and any proxy running the legacy plugin.
+2. Remove `custom-skins.jar` from the proxy's plugin directory. Do not run both implementations together.
+3. Copy the legacy `proxy/plugins/custom-skins/skins.json` to `plugins/data/CustomSkins/skins.json`. The native plugin reads the same selection/moderation format. Preserve file ownership for the Pumpkin process.
+4. Install the native WASM and configuration above, then restart. The old proxy may continue serving unrelated features, but Custom Skins no longer uses it.
 
-## Resource and failure handling
+Back up the world and plugin data before upgrades. To uninstall, stop Pumpkin, remove the WASM and its override, and restart. Keep skin state if you plan to reinstall; moderation is not enforced while the plugin is absent. Use a server restart rather than hot reload with the pinned host.
 
-- Runs inside the existing proxy; no extra service, server, port, or increased resource cap.
-- Two lookup workers and one serialized change worker, with bounded queues.
-- Official lookups cached for 6 hours; nonexistent profiles cached for 15 minutes; up to 512 cache entries.
-- 15-second cooldown for self-service changes; moderation is not delayed by that cooldown.
-- Fixed official HTTPS API endpoints, username validation, request timeouts, signed-texture checks, and no arbitrary URL downloads.
-- State is saved by atomic file replacement before a change is announced. Failed lookups do not overwrite the selected skin.
-- Corrupt existing state is preserved; the plugin blocks new logins if initialization fails, avoiding a silent bypass of moderation. Repair the state from a backup and restart the proxy.
-- The server's existing offline-mode identity model remains unchanged; skins do not authenticate Minecraft accounts.
+## Build and test
 
-
-## Related KYURS plugins
-
-These projects are independently installed; none requires the other three.
-
-- [Custom Skins](https://github.com/kyurs/Rust-CustomSkins): official skins and moderation on Velocity.
-- [Pumpkin Voice](https://github.com/kyurs/Rust-PumpkinVoice): native Pumpkin proximity voice.
-- [Rust Tab List](https://github.com/kyurs/Rust-TabList): native ranks, chat and metrics with a Velocity bridge.
-- [Rust WorldEdit](https://github.com/kyurs/Rust-WorldEdit): native operator-only core editing.
-
-## Build and install
-
-This is a **Java Velocity plugin**, despite the repository prefix. Use JDK 25, Velocity 4.2.0 and EaglerXServer 1.1.1. EaglerXServer is a required runtime dependency. Dependencies are compile-only and not bundled.
+Requires Rust and the WASI Preview 2 target. No Java or EaglerXServer JAR is needed to build.
 
 ```sh
 git clone https://github.com/kyurs/Rust-CustomSkins.git
 cd Rust-CustomSkins
-export JAVA_HOME=/path/to/jdk-25
-export VELOCITY_JAR=/path/to/velocity.jar
-export EAGLER_JAR=/path/to/EaglerXServer.jar
-./scripts/build.sh
+rustup target add wasm32-wasip2
+./build.sh
 ```
 
-The script runs assertion tests and builds `dist/custom-skins.jar`. Downloadable binaries are also available in Releases.
-
-Stop Velocity before replacing the JAR in its `plugins/` directory. Start Velocity with its working directory set to `server/proxy` in this layout:
-
-```text
-server/
-  data/ops.json
-  proxy/
-    plugins/custom-skins.jar
-    plugins/EaglerXServer.jar
-    plugins/custom-skins/skins.json
-```
-
-The operator file is read from `../data/ops.json`; administrative commands require exact UUID matches with level 4. The pinned Pumpkin format uses `bypasses_player_limit`, not vanilla's camelCase spelling. Preserve your existing valid operator file. State is created automatically. Back up `skins.json` before upgrades. To uninstall, stop Velocity, remove the JAR, and restart; saved moderation is no longer enforced.
-
-For integration testing, install `minecraft-protocol` into a separate test tooling directory and run:
+Output: `dist/custom_skins.wasm`. The script runs native model tests, WASM Clippy and the release build. `Cargo.lock` pins dependencies. Integration probes under `tests/` require an explicitly authorized test server; never use real player identities for test operators. Install `minecraft-protocol` in a separate test tooling directory, grant the disposable `SkinAdminProbe` account temporary level-4 operator permission, and run:
 
 ```sh
 PROBE_HOST=your-test-server NODE_PATH=/path/to/test-tools/node_modules node tests/live-probe.cjs
 ```
 
-Use a disposable authorized server. The probe requires temporary level-4 access for `SkinAdminProbe`; revoke it afterward. Rendered Java/Eaglercraft appearance needs an in-game check. Image-URL skins are not supported.
+The default probe uses Java 1.12.2 through a protocol-compatible endpoint; use `PROBE_VERSION` and `PROBE_PORT` for another client version or port. Revoke the test operator afterward. This probe does not require the legacy skin proxy plugin.
 
-License: MIT; see [LICENSE](LICENSE).
+Validation: four model tests, WASM Clippy, and release build passed. On the deployed Pumpkin host, protocol tests passed for official lookup, spaced commands, skin selection/reconnect persistence, non-operator denial, operator moderation and locks, and unmoderation. The old proxy skin JAR was absent. Rendered client appearance, direct Java protocol 777 connectivity, Bedrock and Eaglercraft custom-skin rendering were not tested.
+
+## License and related projects
+
+MIT: use, modify, redistribute and sell the code while retaining its copyright and license notice. See [LICENSE](LICENSE). Third-party dependencies and artwork retain their own licenses.
+
+Optional, independently installed companion projects: [Pumpkin Voice](https://github.com/kyurs/Rust-PumpkinVoice), [Rust Tab List](https://github.com/kyurs/Rust-TabList), [Rust WorldEdit](https://github.com/kyurs/Rust-WorldEdit).

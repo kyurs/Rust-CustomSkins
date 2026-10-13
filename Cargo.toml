@@ -1,0 +1,20 @@
+[package]
+name = "custom-skins"
+version = "2.0.0"
+edition = "2024"
+license = "MIT"
+authors = ["KYURS"]
+[lib]
+crate-type = ["cdylib", "rlib"]
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+pumpkin-plugin-api = { git = "https://github.com/Pumpkin-MC/Pumpkin.git", rev = "204a94ed895f041a845630d5a23c094705a0704e", package = "pumpkin-plugin-api" }
+wit-bindgen = "0.62"
+wasi = "0.14"
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
